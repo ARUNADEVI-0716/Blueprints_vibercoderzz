@@ -58,6 +58,7 @@ export default function OfficerTOTPSetup() {
                     navigate('/officer/verify-2fa')
                     return
                 }
+            }
 
             if (forceNew) await new Promise(r => setTimeout(r, 800))
 

@@ -16,7 +16,10 @@ const app = express()
 const PORT = process.env.PORT || 3001
 
 app.use(cors({
-    origin: ['http://localhost:5173', 'https://your-frontend-domain.com'],
+    origin: [
+        'http://localhost:5173',
+        'https://blueprints-vibercoderzz-x9cb.vercel.app'
+    ],
     credentials: true
 }))
 

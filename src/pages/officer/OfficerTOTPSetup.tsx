@@ -53,8 +53,11 @@ export default function OfficerTOTPSetup() {
                     }
                 }
                 const verified = allFactors.find(f => (f.status as string) === 'verified')
-                if (verified) { navigate('/officer/verify-2fa'); return }
-            }
+                if (verified) {
+                    await new Promise(r => setTimeout(r, 10000))
+                    navigate('/officer/verify-2fa')
+                    return
+                }
 
             if (forceNew) await new Promise(r => setTimeout(r, 800))
 

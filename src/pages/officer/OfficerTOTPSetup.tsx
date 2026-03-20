@@ -21,6 +21,7 @@ export default function OfficerTOTPSetup() {
     const [verifying, setVerifying] = useState(false)
     const [error, setError]         = useState('')
     const [step, setStep]           = useState<'scan' | 'verify' | 'done'>('scan')
+    const [countdown, setCountdown] = useState(0)
 
     const officerEmail = localStorage.getItem('officer_email') || 'Officer'
 
@@ -40,13 +41,33 @@ export default function OfficerTOTPSetup() {
         void enrollTOTP(forceNew)
     }, [])
 
+    const startCountdown = (seconds: number, onDone: () => void) => {
+        setCountdown(seconds)
+        const interval = setInterval(() => {
+            setCountdown(prev => {
+                if (prev <= 1) {
+                    clearInterval(interval)
+                    onDone()
+                    return 0
+                }
+                return prev - 1
+            })
+        }, 1000)
+    }
+
     const enrollTOTP = async (forceNew = false) => {
         setLoading(true); setError('')
         try {
             const { data: factorsData } = await supabase.auth.mfa.listFactors()
             const allFactors = factorsData?.totp || []
 
-            if (!forceNew) {
+            // Always unenroll all existing factors when forceNew
+            if (forceNew) {
+                for (const factor of allFactors) {
+                    try { await supabase.auth.mfa.unenroll({ factorId: factor.id }) } catch {}
+                }
+                await new Promise(r => setTimeout(r, 800))
+            } else {
                 for (const factor of allFactors) {
                     if ((factor.status as string) === 'unverified') {
                         try { await supabase.auth.mfa.unenroll({ factorId: factor.id }) } catch {}
@@ -55,45 +76,33 @@ export default function OfficerTOTPSetup() {
                 const verified = allFactors.find(f => (f.status as string) === 'verified')
                 if (verified) {
                     setLoading(false)
-                    setTimeout(() => navigate('/officer/verify-2fa'), 80000)
+                    startCountdown(60, () => navigate('/officer/verify-2fa'))
                     return
                 }
             }
-
-            if (forceNew) await new Promise(r => setTimeout(r, 800))
 
             const { data, error } = await supabase.auth.mfa.enroll({
                 factorType: 'totp',
                 issuer: 'Nexus — Officer Portal',
                 friendlyName: `Officer: ${officerEmail}`
             })
+
+            console.log('Enroll data:', JSON.stringify(data))
+            console.log('Enroll error:', JSON.stringify(error))
+
             if (error) throw error
+
+            if (!data?.totp?.qr_code) {
+                throw new Error(`No QR code returned. Data: ${JSON.stringify(data)}`)
+            }
 
             setFactorId(data.id)
             setQrCode(data.totp.qr_code)
             setSecret(data.totp.secret)
 
         } catch (err: any) {
-            const msg = err.message || ''
-            if (msg.toLowerCase().includes('already exists') ||
-                msg.toLowerCase().includes('already enrolled')) {
-                await new Promise(r => setTimeout(r, 1500))
-                try {
-                    const { data, error } = await supabase.auth.mfa.enroll({
-                        factorType: 'totp',
-                        issuer: 'Nexus — Officer Portal',
-                        friendlyName: `Officer: ${officerEmail}`
-                    })
-                    if (error) throw error
-                    setFactorId(data.id)
-                    setQrCode(data.totp.qr_code)
-                    setSecret(data.totp.secret)
-                } catch {
-                    navigate('/officer/verify-2fa')
-                }
-                return
-            }
-            setError(msg || 'Failed to initialize 2FA setup')
+            console.error('TOTP enroll error full:', err)
+            setError(err.message || JSON.stringify(err) || 'Failed to initialize 2FA setup')
         } finally {
             setLoading(false)
         }
@@ -194,6 +203,14 @@ export default function OfficerTOTPSetup() {
                                     ))}
                                 </div>
 
+                                {/* Countdown banner */}
+                                {countdown > 0 && (
+                                    <div style={{ background:'#eef4ff', border:'1px solid #bfdbfe', borderRadius:8, padding:'10px 14px', marginBottom:16, fontSize:13, color:'#0060ac', fontWeight:600, display:'flex', alignItems:'center', gap:8 }}>
+                                        <MSIcon name="timer" size={16} color="#0060ac"/>
+                                        Redirecting to login in {countdown}s — scan the QR code now
+                                    </div>
+                                )}
+
                                 {error && (
                                     <div style={{ background:'#fef2f2', border:'1px solid #fecaca', color:'#dc2626', borderRadius:8, padding:'10px 14px', marginBottom:16, fontSize:13, display:'flex', gap:8, alignItems:'center' }}>
                                         <MSIcon name="warning" size={14} color="#dc2626"/> {error}
@@ -233,7 +250,6 @@ export default function OfficerTOTPSetup() {
                                     </div>
                                 )}
 
-                                {/* OTP Input */}
                                 <div style={{ marginBottom:20 }}>
                                     <label style={{ display:'block', fontSize:10, fontWeight:700, color:'#43474f', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:10 }}>
                                         Authenticator Code
@@ -362,7 +378,9 @@ export default function OfficerTOTPSetup() {
                             ) : (
                                 <div style={{ textAlign:'center' }}>
                                     <MSIcon name="qr_code" size={40} color="rgba(255,255,255,0.3)"/>
-                                    <p style={{ fontSize:14, color:'rgba(255,255,255,0.5)', margin:'12px 0' }}>Failed to generate QR code</p>
+                                    <p style={{ fontSize:14, color:'rgba(255,255,255,0.5)', margin:'12px 0' }}>
+                                        {error || 'Failed to generate QR code'}
+                                    </p>
                                     <button onClick={() => enrollTOTP(true)}
                                             style={{ background:'rgba(255,255,255,0.15)', color:'white', border:'none', borderRadius:8, padding:'9px 20px', fontWeight:600, fontSize:13, cursor:'pointer' }}>
                                         Try Again

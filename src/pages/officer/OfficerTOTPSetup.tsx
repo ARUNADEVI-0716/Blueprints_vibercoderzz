@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabaseClient'
 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
+
 function MSIcon({ name, size = 20, color, fill = 0 }: { name: string; size?: number; color?: string; fill?: number }) {
     return (
         <span className="material-symbols-outlined"
@@ -34,11 +36,7 @@ export default function OfficerTOTPSetup() {
         const token = localStorage.getItem('officer_token')
         if (!token) { navigate('/officer/login'); return }
 
-        const params   = new URLSearchParams(window.location.search)
-        const forceNew = params.get('reset') === 'true' ||
-            localStorage.getItem('officer_totp_reset') === 'true'
-        localStorage.removeItem('officer_totp_reset')
-        void enrollTOTP(forceNew)
+        void enrollTOTP()
     }, [])
 
     const startCountdown = (seconds: number, onDone: () => void) => {
@@ -55,45 +53,54 @@ export default function OfficerTOTPSetup() {
         }, 1000)
     }
 
-    const enrollTOTP = async (forceNew = false) => {
-        setLoading(true); setError('')
+    // Reset all TOTP factors via backend admin API
+    const resetViaBackend = async (): Promise<boolean> => {
         try {
-            const { data: factorsData } = await supabase.auth.mfa.listFactors()
-            const allFactors = factorsData?.totp || []
+            const token = localStorage.getItem('officer_token')
+            const res = await fetch(`${BACKEND_URL}/api/officer/reset-totp`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                }
+            })
+            const data = await res.json()
+            console.log('Reset result:', data)
+            return res.ok
+        } catch (err) {
+            console.error('Backend reset failed:', err)
+            return false
+        }
+    }
 
-            // Always unenroll all existing factors when forceNew
-            if (forceNew) {
-                for (const factor of allFactors) {
-                    try { await supabase.auth.mfa.unenroll({ factorId: factor.id }) } catch {}
-                }
-                await new Promise(r => setTimeout(r, 800))
-            } else {
-                for (const factor of allFactors) {
-                    if ((factor.status as string) === 'unverified') {
-                        try { await supabase.auth.mfa.unenroll({ factorId: factor.id }) } catch {}
-                    }
-                }
-                const verified = allFactors.find(f => (f.status as string) === 'verified')
-                if (verified) {
-                    setLoading(false)
-                    startCountdown(60, () => navigate('/officer/verify-2fa'))
-                    return
-                }
-            }
+    const enrollTOTP = async (forceReset = false) => {
+        setLoading(true)
+        setError('')
+        setQrCode('')
+        setSecret('')
+        setFactorId('')
 
+        try {
+            // Step 1: Reset via backend admin API (deletes verified + unverified)
+            await resetViaBackend()
+
+            // Step 2: Wait for Supabase to process deletion
+            await new Promise(r => setTimeout(r, 1500))
+
+            // Step 3: Enroll fresh
             const { data, error } = await supabase.auth.mfa.enroll({
                 factorType: 'totp',
                 issuer: 'Nexus — Officer Portal',
                 friendlyName: `Officer: ${officerEmail}`
             })
 
-            console.log('Enroll data:', JSON.stringify(data))
+            console.log('Enroll response:', JSON.stringify(data))
             console.log('Enroll error:', JSON.stringify(error))
 
             if (error) throw error
 
             if (!data?.totp?.qr_code) {
-                throw new Error(`No QR code returned. Data: ${JSON.stringify(data)}`)
+                throw new Error('No QR code returned from Supabase')
             }
 
             setFactorId(data.id)
@@ -101,8 +108,8 @@ export default function OfficerTOTPSetup() {
             setSecret(data.totp.secret)
 
         } catch (err: any) {
-            console.error('TOTP enroll error full:', err)
-            setError(err.message || JSON.stringify(err) || 'Failed to initialize 2FA setup')
+            console.error('enrollTOTP failed:', err)
+            setError(err.message || 'Failed to generate QR code')
         } finally {
             setLoading(false)
         }
@@ -203,11 +210,10 @@ export default function OfficerTOTPSetup() {
                                     ))}
                                 </div>
 
-                                {/* Countdown banner */}
                                 {countdown > 0 && (
                                     <div style={{ background:'#eef4ff', border:'1px solid #bfdbfe', borderRadius:8, padding:'10px 14px', marginBottom:16, fontSize:13, color:'#0060ac', fontWeight:600, display:'flex', alignItems:'center', gap:8 }}>
                                         <MSIcon name="timer" size={16} color="#0060ac"/>
-                                        Redirecting to login in {countdown}s — scan the QR code now
+                                        Redirecting in {countdown}s
                                     </div>
                                 )}
 
@@ -221,7 +227,7 @@ export default function OfficerTOTPSetup() {
                                         style={{ width:'100%', padding:'13px', background:'#001736', color:'white', border:'none', borderRadius:8, fontWeight:700, fontSize:15, cursor:loading?'not-allowed':'pointer', opacity:loading?0.7:1, display:'flex', alignItems:'center', justifyContent:'center', gap:8, transition:'all 0.2s' }}
                                         onMouseEnter={e => !loading && (e.currentTarget.style.background='#002b5b')}
                                         onMouseLeave={e => (e.currentTarget.style.background='#001736')}>
-                                    {loading ? <><Spinner/> Loading QR Code…</> : <>I've Scanned the QR Code <MSIcon name="arrow_forward" size={16} color="white"/></>}
+                                    {loading ? <><Spinner/> Resetting &amp; Generating QR…</> : <>I've Scanned the QR Code <MSIcon name="arrow_forward" size={16} color="white"/></>}
                                 </button>
                             </>
                         )}
@@ -357,7 +363,7 @@ export default function OfficerTOTPSetup() {
                             {loading ? (
                                 <div style={{ textAlign:'center' }}>
                                     <div style={{ width:40, height:40, border:'3px solid rgba(255,255,255,0.2)', borderTopColor:'white', borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto 16px' }}/>
-                                    <p style={{ fontSize:14, color:'rgba(255,255,255,0.7)', fontWeight:600 }}>Generating QR Code…</p>
+                                    <p style={{ fontSize:14, color:'rgba(255,255,255,0.7)', fontWeight:600 }}>Generating fresh QR Code…</p>
                                 </div>
                             ) : qrCode ? (
                                 <>
